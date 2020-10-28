@@ -31,12 +31,17 @@ def load_data(fn, dcycle):
     patient.remove_baseline()
     patient.pscrunch()
     patient.dedisperse()
-    data = patient.get_data()
-    data_offpulse = data_without_main_pulse(data, patient, dcycle)
+    #data = patient.get_data()
+    #data_offpulse = data_without_main_pulse(data, patient, dcycle)
+    if dcycle > 0:
+        print('main pulse is being removed')
+        data_offpulse = data_without_main_pulse(patient, dcycle)
+    else:
+        data_offpulse = patient.get_data()
     return ar, data_offpulse
 
 
-def data_without_main_pulse(data, fn, dcycle):
+def data_without_main_pulse(fn, dcycle):
     """ Mask the main pulse from data
     Args:
         data: data from Load_data function
@@ -45,6 +50,7 @@ def data_without_main_pulse(data, fn, dcycle):
     Return:
         data with the main pulse get masked
     """
+    data = fn.get_data()
     mask = find_mask_for_main_pulse(fn, dcycle)
     data = data * mask
     data = np.ma.masked_equal(data, 0.)
@@ -114,7 +120,7 @@ def max_simulate_find(data):
     """
     l = len(data)
     data_sort = np.sort(data)
-    xr1, xr2 = np.int(16*l/100) , np.int(50*l/100)
+    xr1, xr2 = np.int(20*l/100) , np.int(50*l/100)
     np.random.seed(0)
     sim = np.random.normal(0, get_std(l, xr1, xr2) * np.std(data_sort[xr1 : xr2]) , l)
     shift_ind = np.int((xr1 + xr2)/2.0)
@@ -122,7 +128,8 @@ def max_simulate_find(data):
     diff = data_sort[shift_ind] - sim_sort[shift_ind]
     sim = sim + diff
     max_sim = np.max(sim)
-    return max_sim
+    min_sim = np.min(sim)
+    return min_sim, max_sim
 
 
 
@@ -154,9 +161,9 @@ def make_cleaned_profile(df):
                 fft_list.append(fft_peak(data[s, :, j]))
 
 
-            max_select_std = max_simulate_find(std_list)
-            max_select_ptp = max_simulate_find(ptp_list)
-            max_select_fft = max_simulate_find(fft_list)
+            _, max_select_std = max_simulate_find(std_list)
+            _, max_select_ptp = max_simulate_find(ptp_list)
+            _, max_select_fft = max_simulate_find(fft_list)
 #            print("std, ptp, fft = ", max_select_std, max_select_ptp, max_select_fft)
 
 
@@ -176,8 +183,10 @@ def make_cleaned_profile(df):
 def clean(data, filename):
     """Clean data based on the number of phase bins """
 
-    # if nbin is less than or equal to 1024
-    if nbin//1024 <= 1:
+    # cleaning is done if nchan is less than or equal to 1024
+    if nchan//1024 > 1:
+        print('You need to use RFI hunter for UWL data')
+    else:
         chan_remove = []
         for s in xrange(nsub):
             std_list = []
@@ -189,15 +198,16 @@ def clean(data, filename):
                 fft_list.append(fft_peak(data[s, :, j]))
 
 
-            max_select_std = max_simulate_find(std_list)
-            max_select_ptp = max_simulate_find(ptp_list)
-            max_select_fft = max_simulate_find(fft_list)
+            min_select_std, max_select_std = max_simulate_find(std_list)
+            min_select_ptp, max_select_ptp = max_simulate_find(ptp_list)
+            min_select_fft, max_select_fft = max_simulate_find(fft_list)
 #            print("std, ptp, fft = ", max_select_std, max_select_ptp, max_select_fft)
 
 
 
             for i, (item_std, item_ptp, item_fft) in enumerate(zip(std_list, ptp_list, fft_list)):
-                if item_std > max_select_std or item_ptp > max_select_ptp or item_fft > max_select_fft:
+                if item_std > max_select_std or item_ptp > max_select_ptp or item_fft > max_select_fft or item_std < min_select_std or item_ptp < min_select_ptp or item_fft < min_select_fft:
+#                if item_std > max_select_std or item_ptp > max_select_ptp or item_fft > max_select_fft:
                     chan_remove.append(i)
                     ar.get_Integration(s).set_weight(i, 0.0)
         chan_list = np.sort(list(set(chan_remove)))
@@ -221,38 +231,38 @@ def clean(data, filename):
 
 
 
-    # if nbin is more than 1025. cleaning is done by deviding the bins into several chunks
-    if nbin//1024 > 1:
-        print("Phase bins are chunked into {} parts".format(nbin//1024 + 1))
-        chan_remove = []
-        for s in xrange(nsub):
-            for c, chunk in chunk_data(data):
-                std_list = []
-                ptp_list = []
-                fft_list = []
-                for j in xrange(nchan):
-                    std_list.append(np.ma.std(chunk[s, :, j]))
-                    ptp_list.append(np.ma.ptp(chunk[s, :, j]))
-                    fft_list.append(fft_peak(chunk[s, :, j]))
-       
-                max_select_std = max_simulate_find(std_list)
-                max_select_ptp = max_simulate_find(ptp_list)
-                max_select_fft = max_simulate_find(fft_list)
-#               print("std, ptp, fft = ", max_select_std, max_select_ptp, max_select_fft)
-
-
-                for i, (item_std, item_ptp, item_fft) in enumerate(zip(std_list, ptp_list, fft_list)):
-                    if item_std > max_select_std or item_ptp > max_select_ptp or item_fft > max_select_fft:
-                        chan_remove.append(i)
-                        ar.get_Integration(s).set_weight(i, 0.0)
-        ar.unload("{}.{}".format(filename, "mohsen"))
-        print("{}.{} is unloaded".format(filename, "mohsen"))
-        chan_list = np.sort(list(set(chan_remove))) 
-        print("{} channels are deleted".format(len(chan_list)))
+#    # if nbin is more than 1025. cleaning is done by deviding the bins into several chunks
+#    if nbin//1024 > 1:
+#        print("Phase bins are chunked into {} parts".format(nbin//1024 + 1))
+#        chan_remove = []
+#        for s in xrange(nsub):
+#            for c, chunk in chunk_data(data):
+#                std_list = []
+#                ptp_list = []
+#                fft_list = []
+#                for j in xrange(nchan):
+#                    std_list.append(np.ma.std(chunk[s, :, j]))
+#                    ptp_list.append(np.ma.ptp(chunk[s, :, j]))
+#                    fft_list.append(fft_peak(chunk[s, :, j]))
+#       
+#                max_select_std = max_simulate_find(std_list)
+#                max_select_ptp = max_simulate_find(ptp_list)
+#                max_select_fft = max_simulate_find(fft_list)
+##               print("std, ptp, fft = ", max_select_std, max_select_ptp, max_select_fft)
+#
+#
+#                for i, (item_std, item_ptp, item_fft) in enumerate(zip(std_list, ptp_list, fft_list)):
+#                    if item_std > max_select_std or item_ptp > max_select_ptp or item_fft > max_select_fft:
+#                        chan_remove.append(i)
+#                        ar.get_Integration(s).set_weight(i, 0.0)
+#        ar.unload("{}.{}".format(filename, "mohsen"))
+#        print("{}.{} is unloaded".format(filename, "mohsen"))
+#        chan_list = np.sort(list(set(chan_remove))) 
+#        print("{} channels are deleted".format(len(chan_list)))
 
  
 if __name__ == '__main__':
-    duty_cycle = sys.argv[1]
+    duty_cycle = np.int(sys.argv[1])
     for filename in sys.argv[2:]:
         print("="*60) 
         start = timer()

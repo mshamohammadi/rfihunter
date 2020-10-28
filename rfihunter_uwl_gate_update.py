@@ -11,7 +11,6 @@ import psrchive as psr
 import sys
 from timeit import default_timer as timer
 
-
 def load_data(fn, gate_file):
     """ Load data from a .ar file 
     Open file, remove baseline, dedisperse, pscrunch, 
@@ -79,6 +78,7 @@ def main_pulse_wash(data, bin_gate):
     return df
 
 
+
 def fft_peak(data):
     """Load amplitufes of a single frequency channel
     This function was inspired from CoastGuard:
@@ -128,7 +128,7 @@ def max_simulate_find(data):
     """
     l = len(data)
     data_sort = np.sort(data)
-    xr1, xr2 = np.int(16*l/100) , np.int(50*l/100)
+    xr1, xr2 = np.int(15*l/100) , np.int(50*l/100)
     np.random.seed(0)
     sim = np.random.normal(0, get_std(l, xr1, xr2) * np.std(data_sort[xr1 : xr2]) , l)
     shift_ind = np.int((xr1 + xr2)/2.0)
@@ -138,53 +138,91 @@ def max_simulate_find(data):
     max_sim = np.max(sim)
     return max_sim
 
+def intersection(lst1, lst2):
+    lst1 = set(lst1)
+    lst2 = set(lst2) 
+    lst3 = [value for value in lst1 if value in lst2]  
+    return lst3 
 
 
 
-
-def chunk_data(data):
+def chunk_data_bin(data):
     """divide the whole phase bins into parts with n phase bins"""
     n = 1024
     for i in xrange(nbin // n + 1):
         yield (i, data[:, :, :, (i * n) : ((i + 1) * n)])
 
 
+def chunk_data_chan(data, k):
+    """divide the whole phase bins into parts with n phase bins"""
+    n = nchan//k
+    for j in xrange(k):
+        yield (j, data[:, :, (j * n) : ((j + 1) * n)])
 
 
 def clean(data, filename):
-    """Clean data based on the number of phase bins """
+#    """Clean data based on the number of phase bins """
 
-    # cleaning is done if nchan is less than or equal to 1024
-    if nchan//1024 > 1:
-        print('You need to use RFI hunter for UWL data')
-    else:
-        chan_remove = []
+    # if nbin is less than or equal to 1024
+#    if nbin//1024 <= 1:
         for s in xrange(nsub):
-            "subint = {}".format(s)
-            std_list = []
-            ptp_list = []
-            fft_list = []
-            for j in xrange(nchan):
-                std_list.append(np.std(data[s,: , j]))
-                ptp_list.append(np.ptp(data[s, :, j]))
-                fft_list.append(fft_peak(data[s, :, j]))
+            chunk_num = 4
+            chan_remove_1 = []
+            d1 = data
+            _, _, nchan, _ = d1.shape
+            for c, chunk in chunk_data_chan(d1, chunk_num):
+                std_list = []
+                ptp_list = []
+                fft_list = []
+                for j in xrange(nchan//chunk_num):
+                    std_list.append(np.std(chunk[s,: , j]))
+                    ptp_list.append(np.ptp(chunk[s, :, j]))
+                    fft_list.append(fft_peak(chunk[s, :, j]))
+                max_select_std = max_simulate_find(std_list)
+                max_select_ptp = max_simulate_find(ptp_list)
+                max_select_fft = max_simulate_find(fft_list)
+#               print("std, ptp, fft = ", max_select_std, max_select_ptp, max_select_fft)
 
 
-            max_select_std = max_simulate_find(std_list)
-            max_select_ptp = max_simulate_find(ptp_list)
-            max_select_fft = max_simulate_find(fft_list)
-#            print("std, ptp, fft = ", max_select_std, max_select_ptp, max_select_fft)
+
+                for i, (item_std, item_ptp, item_fft) in enumerate(zip(std_list, ptp_list, fft_list)):
+                    if item_std > max_select_std or item_ptp > max_select_ptp or item_fft > max_select_fft:
+                        chan_remove_1.append(i + c*(nchan//chunk_num))
+            chan_remove_1 = np.sort(list(set(chan_remove_1)))
+
+
+            chunk_num = 3
+            chan_remove_2 = []
+            d2 = data[:, :, :(nchan - nchan%chunk_num)]
+            _, _, nchan, _ = d2.shape
+            for c, chunk in chunk_data_chan(d2, chunk_num):
+                std_list = []
+                ptp_list = []
+                fft_list = []
+                for j in xrange(nchan//chunk_num):
+                    std_list.append(np.std(chunk[s,: , j]))
+                    ptp_list.append(np.ptp(chunk[s, :, j]))
+                    fft_list.append(fft_peak(chunk[s, :, j]))
+                max_select_std = max_simulate_find(std_list)
+                max_select_ptp = max_simulate_find(ptp_list)
+                max_select_fft = max_simulate_find(fft_list)
+#               print("std, ptp, fft = ", max_select_std, max_select_ptp, max_select_fft)
 
 
 
-            for i, (item_std, item_ptp, item_fft) in enumerate(zip(std_list, ptp_list, fft_list)):
-                if item_std > max_select_std or item_ptp > max_select_ptp or item_fft > max_select_fft:
-                    chan_remove.append(i)
-                    ar.get_Integration(s).set_weight(i, 0.0)
+                for i, (item_std, item_ptp, item_fft) in enumerate(zip(std_list, ptp_list, fft_list)):
+                    if item_std > max_select_std or item_ptp > max_select_ptp or item_fft > max_select_fft:
+                        chan_remove_2.append(i + c*(nchan//chunk_num))
+            chan_remove_2 = np.sort(list(set(chan_remove_2)))
+
+            chan_remove = intersection(chan_remove_1, chan_remove_2)
+            for item in chan_remove:
+                ar.get_Integration(s).set_weight(item, 0.0)
+            chan_list = np.sort(list(set(chan_remove)))
+            print("{}, {}, {}".format(len(chan_remove_1), len(chan_remove_2), len(chan_remove)))
+            print("{} channels are deleted at subint {}".format(len(chan_list), s))
         ar.unload("{}.{}".format(filename, "mohsen"))
         print("{}.{} is unloaded".format(filename, "mohsen"))
-        chan_list = np.sort(list(set(chan_remove)))
-        print("{} channels are deleted".format(len(chan_list)))
 
 
 
@@ -196,7 +234,7 @@ def clean(data, filename):
 #        print("Phase bins are chunked into {} parts".format(nbin//1024 + 1))
 #        chan_remove = []
 #        for s in xrange(nsub):
-#            for c, chunk in chunk_data(data):
+#            for c, chunk in chunk_data_bin(data):
 #                std_list = []
 #                ptp_list = []
 #                fft_list = []
@@ -226,12 +264,5 @@ if __name__ == '__main__':
         start = timer()
         ar, data = load_data(filename, sys.argv[-1])
         nsub, npol, nchan, nbin = data.shape
-        # cleaning is done if nchan is less than or equal to 1024
-        if nchan//1024 > 1:
-            print('Cleaning stopped! You need to use RFI hunter for UWL data')
-        else:
-            clean(data, filename)
-            gc.collect()
-            print("Cleaning time: {} sec".format(timer()-start))
-#            with open("timelist", "a") as file:
-#               file.write("{}\n".format(timer()-start))
+        clean(data, filename)
+        print("Cleaning time: {} sec".format(timer()-start))
